@@ -22,6 +22,7 @@ const corsOptions = {
   },
   methods: ["GET", "POST", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Accept"],
+  exposedHeaders: ["X-PDF-Duplicated", "X-PDF-Pages", "Content-Disposition"] // ⬅️ important
 };
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions)); // prévol
@@ -50,7 +51,6 @@ app.post("/pdf/duplicate-if-single-page", upload.single("file"), async (req, res
 
     const input = req.file.buffer;
 
-    // Laisse pdf-lib valider le PDF (plus fiable que tester '%PDF')
     let pdf;
     try {
       pdf = await PDFDocument.load(input, { ignoreEncryption: true });
@@ -66,16 +66,17 @@ app.post("/pdf/duplicate-if-single-page", upload.single("file"), async (req, res
       pdf.addPage(p1);
       const out = await pdf.save();
       return res
+        .status(200)
         .type("application/pdf")
         .set("Cache-Control", "no-store")
         .send(Buffer.from(out));
     }
 
-    // Si le PDF >= 2 pages, renvoyer tel quel
+    // Aucun changement nécessaire → 204
     return res
-      .type("application/pdf")
+      .status(204)
       .set("Cache-Control", "no-store")
-      .send(input);
+      .end();
 
   } catch (e) {
     console.error(e);
