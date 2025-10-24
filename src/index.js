@@ -1,87 +1,64 @@
 // src/index.js
 import express from "express";
 import fetch from "node-fetch";
-import cors from "cors";
+import bodyParser from "body-parser";
+import NodeCache from "node-cache";
 
 const app = express();
-app.use(express.urlencoded({ extended: true }));
-app.use(express.json());
-app.use(cors());
-
-// --- Configuration ---
 const PORT = process.env.PORT || 10000;
 const API_KEY = process.env.DEEPL_API_KEY;
-const API_URL = API_KEY?.includes(":fx")
-  ? "https://api-free.deepl.com/v2/translate" // clé Free (suffixe :fx)
-  : "https://api.deepl.com/v2/translate";      // clé Pro (pas de :fx)
+const API_URL = "https://api.deepl.com/v2/translate"; // ✅ endpoint PRO
+const cache = new NodeCache({ stdTTL: 3600 }); // 1h de cache
 
-if (!API_KEY) {
-  console.warn("⚠️  Aucune clé DEEPL_API_KEY trouvée dans les variables d'environnement Render !");
-}
+app.use(bodyParser.urlencoded({ extended: true }));
+app.use(bodyParser.json());
 
-// --- Vérification racine ---
-app.get("/", (req, res) => {
-  res.json({
-    ok: true,
-    hasKey: !!API_KEY,
-    envKeys: Object.keys(process.env).filter(k => k.startsWith("DEEPL")),
-    apiUrl: API_URL
-  });
-});
-
-// --- Proxy DeepL ---
+// Proxy DeepL Pro optimisé
 app.post("/deepl-proxy", async (req, res) => {
   try {
-    if (!API_KEY) {
-      return res.status(500).json({ error: "Clé API DeepL manquante." });
+    const texts = Array.isArray(req.body["texts[]"])
+      ? req.body["texts[]"]
+      : [req.body.text].filter(Boolean);
+    const target = req.body.target_lang || "FR";
+    if (!texts.length) return res.status(400).json({ error: "Paramètre 'text' ou 'texts[]' requis" });
+
+    // Cache mémoire
+    const cacheKey = target + ":" + texts.join("||");
+    if (cache.has(cacheKey)) {
+      return res.json({ translations: cache.get(cacheKey), cached: true });
     }
 
-    let { text, texts, target_lang } = req.body || {};
-    const target = (target_lang || "NL").toUpperCase();
+    // Requête DeepL Pro
+    const form = new URLSearchParams();
+    texts.forEach(t => form.append("text", t));
+    form.append("target_lang", target);
 
-    // Normalisation en tableau
-    if (!texts) {
-      if (typeof text === "string") texts = [text];
-      else if (Array.isArray(text)) texts = text;
-    }
-
-    if (!Array.isArray(texts) || texts.length === 0) {
-      return res.status(400).json({ error: "Paramètre 'text' ou 'texts[]' requis", body: req.body });
-    }
-
-    // Sécurité : max 50 textes par requête
-    texts = texts.slice(0, 50);
-
-    const params = new URLSearchParams();
-    texts.forEach(t => params.append("text", t));
-    params.append("target_lang", target);
-
-    const deeplRes = await fetch(API_URL, {
+    const response = await fetch(API_URL, {
       method: "POST",
       headers: {
         "Authorization": `DeepL-Auth-Key ${API_KEY}`,
         "Content-Type": "application/x-www-form-urlencoded"
       },
-      body: params
+      body: form
     });
 
-    const raw = await deeplRes.text();
-    let json;
-    try {
-      json = JSON.parse(raw);
-    } catch {
-      json = { error: "Invalid JSON from DeepL", raw };
+    if (!response.ok) {
+      const msg = await response.text();
+      throw new Error(`DeepL ${response.status}: ${msg}`);
     }
 
-    res.set("Access-Control-Allow-Origin", "*");
-    res.status(deeplRes.status).json(json);
-
-  } catch (e) {
-    console.error("Erreur proxy DeepL:", e);
-    res.status(500).json({ error: e.message });
+    const data = await response.json();
+    cache.set(cacheKey, data.translations);
+    res.json(data);
+  } catch (err) {
+    console.error("❌ Erreur proxy:", err);
+    res.status(500).json({ error: "Erreur proxy DeepL Pro", details: err.message });
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`🚀 DeepL proxy actif sur le port ${PORT}`);
+// Test de santé
+app.get("/", (req, res) => {
+  res.json({ ok: true, mode: "PRO", cacheItems: cache.keys().length });
 });
+
+app.listen(PORT, () => console.log(`🚀 DeepL Pro proxy actif sur le port ${PORT}`));
