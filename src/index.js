@@ -47,4 +47,13 @@ app.post("/deepl-proxy", async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
+// Route de test simple pour voir les variables dispo
+app.get("/ping", (req, res) => {
+  res.json({
+    ok: true,
+    hasKey: !!process.env.DEEPL_API_KEY,
+    envKeys: Object.keys(process.env).filter(k => k.includes("DEEPL") || k.includes("NODE")),
+  });
+});
+
 app.listen(PORT, () => console.log(`🚀 DeepL proxy actif sur le port ${PORT}`));
