@@ -40,60 +40,44 @@ app.get("/", (req, res) => {
 
 // Proxy DeepL PRO (batch + cache)
 app.post("/deepl-proxy", async (req, res) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  if (req.method === "OPTIONS") return res.sendStatus(200);
+
+  const { text, target_lang, texts } = req.body || {};
+  const apiKey = process.env.DEEPL_API_KEY;
+
+  if (!apiKey) return res.status(500).json({ error: "DEEPL_API_KEY manquante" });
+  if (!text && !texts) return res.status(400).json({ error: "Paramètre 'text' ou 'texts[]' requis", body: req.body });
+
   try {
-    if (!API_KEY) return res.status(500).json({ error: "DEEPL_API_KEY manquante" });
-
-    // texts[] (array) OU text (string)
-    const texts = Array.isArray(req.body["texts[]"])
-      ? req.body["texts[]"]
-      : (typeof req.body.text === "string" ? [req.body.text] : []);
-    if (texts.length === 0) {
-      return res.status(400).json({ error: "Paramètre 'text' ou 'texts[]' requis", body: req.body || {} });
+    // Adaptation pour DeepL batch
+    const params = new URLSearchParams();
+    if (Array.isArray(texts)) {
+      texts.forEach(t => params.append("text", t));
+    } else if (text) {
+      params.append("text", text);
     }
+    params.append("target_lang", target_lang || "NL");
 
-    const target = (req.body.target_lang || "FR").toUpperCase();
-
-    // Clef de cache (simple, mais efficace)
-    const cacheKey = target + "::" + texts.join("||");
-    const cached = cache.get(cacheKey);
-    if (cached) {
-      return res.json({ translations: cached, cached: true });
-    }
-
-    // Envoi batch à DeepL
-    const form = new URLSearchParams();
-    texts.slice(0, 50).forEach(t => form.append("text", t)); // max 50
-    form.append("target_lang", target);
-
-    const response = await fetch(API_URL, {
+    const deeplRes = await fetch("https://api.deepl.com/v2/translate", {
       method: "POST",
       headers: {
-        "Authorization": `DeepL-Auth-Key ${API_KEY}`,
-        "Content-Type": "application/x-www-form-urlencoded"
+        "Authorization": `DeepL-Auth-Key ${apiKey}`,
+        "Content-Type": "application/x-www-form-urlencoded",
       },
-      body: form
+      body: params
     });
 
-    const raw = await response.text();
-    if (!response.ok) {
-      return res.status(response.status).json({ error: "DeepL error", status: response.status, raw });
-    }
-
-    let data;
-    try { data = JSON.parse(raw); }
-    catch { return res.status(502).json({ error: "Invalid JSON from DeepL", raw }); }
-
-    // Mise en cache des traductions (tableau tel quel)
-    if (Array.isArray(data.translations)) {
-      cache.set(cacheKey, data.translations);
-    }
-
-    res.set("Access-Control-Allow-Origin", "*");
-    return res.json(data);
-  } catch (err) {
-    console.error("❌ Erreur proxy DeepL Pro:", err);
-    return res.status(500).json({ error: "Erreur proxy DeepL Pro", details: err.message });
+    const data = await deeplRes.json();
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.json(data);
+  } catch (e) {
+    console.error("Erreur DeepL:", e);
+    res.status(500).json({ error: "Erreur proxy DeepL", details: e.message });
   }
 });
+
 
 app.listen(PORT, () => console.log(`🚀 DeepL Pro proxy actif sur le port ${PORT}`));
