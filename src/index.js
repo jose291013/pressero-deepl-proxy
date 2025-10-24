@@ -1,88 +1,50 @@
 import express from "express";
-import multer from "multer";
+import fetch from "node-fetch";
 import cors from "cors";
 import helmet from "helmet";
 import morgan from "morgan";
-import { PDFDocument } from "pdf-lib";
 
 const app = express();
-app.set("trust proxy", true);
 
-// ——— CORS ———
-// Mets EXACTEMENT tes origines Pressero (sans slash final), séparées par des virgules si plusieurs
-const normalize = (u) => (u || "").trim().replace(/\/$/, "");
-const allowed = (process.env.CORS_ORIGIN || "").split(",").map(normalize).filter(Boolean);
+// Sécurité et middlewares
+app.use(helmet());
+app.use(cors({ origin: "*" }));
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
+app.use(morgan("tiny"));
 
-const corsOptions = {
-  origin(origin, cb) {
-    if (!origin) return cb(null, true);       // server→server (curl)
-    if (!allowed.length) return cb(null, true); // dev: tout autorisé si non défini
-    if (allowed.includes(normalize(origin))) return cb(null, true);
-    return cb(new Error("Not allowed by CORS: " + origin));
-  },
-  methods: ["GET", "POST", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Accept"],
-  exposedHeaders: ["X-PDF-Duplicated", "X-PDF-Pages", "Content-Disposition"] // ⬅️ important
-};
-app.use(cors(corsOptions));
-app.options("*", cors(corsOptions)); // prévol
+// Route test
+app.get("/", (req, res) => res.send("✅ DeepL proxy en ligne"));
 
-// ——— Helmet ———
-// Autoriser la consultation cross-origin de la ressource binaire (sinon CORP bloque côté navigateur)
-app.use(helmet({
-  crossOriginResourcePolicy: { policy: "cross-origin" },
-  contentSecurityPolicy: false, // inutile pour cet usage binaire
-}));
+// Proxy principal
+app.post("/deepl-proxy", async (req, res) => {
+  const { text, target_lang } = req.body || {};
+  const apiKey = process.env.DEEPL_API_KEY;
 
-app.use(morgan(process.env.NODE_ENV === "development" ? "dev" : "combined"));
+  if (!apiKey) return res.status(500).json({ error: "DEEPL_API_KEY manquante" });
+  if (!text) return res.status(400).json({ error: "Paramètre 'text' requis" });
 
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 60 * 1024 * 1024 }, // 60MB
-});
-
-app.get("/", (_, res) => res.status(200).send("OK"));
-app.get("/healthz", (_, res) => res.status(200).json({ status: "ok" }));
-
-// Endpoint principal : duplique la page 1 si le PDF a 1 seule page
-app.post("/pdf/duplicate-if-single-page", upload.single("file"), async (req, res) => {
   try {
-    if (!req.file) return res.status(400).json({ error: "Missing file" });
+    const deeplRes = await fetch("https://api-free.deepl.com/v2/translate", {
+      method: "POST",
+      headers: {
+        "Authorization": `DeepL-Auth-Key ${apiKey}`,
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      body: new URLSearchParams({
+        text,
+        target_lang: target_lang || "NL"
+      })
+    });
 
-    const input = req.file.buffer;
-
-    let pdf;
-    try {
-      pdf = await PDFDocument.load(input, { ignoreEncryption: true });
-    } catch (e) {
-      console.error("PDF load error:", e?.message);
-      return res.status(400).json({ error: "Unable to read PDF" });
-    }
-
-    const count = pdf.getPageCount();
-
-    if (count === 1) {
-      const [p1] = await pdf.copyPages(pdf, [0]);
-      pdf.addPage(p1);
-      const out = await pdf.save();
-      return res
-        .status(200)
-        .type("application/pdf")
-        .set("Cache-Control", "no-store")
-        .send(Buffer.from(out));
-    }
-
-    // Aucun changement nécessaire → 204
-    return res
-      .status(204)
-      .set("Cache-Control", "no-store")
-      .end();
-
+    const data = await deeplRes.json();
+    res.set("Access-Control-Allow-Origin", "*");
+    res.json(data);
   } catch (e) {
-    console.error(e);
-    return res.status(500).json({ error: "Duplication failed" });
+    console.error("Erreur DeepL:", e);
+    res.status(500).json({ error: "Erreur proxy DeepL", details: e.message });
   }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`[pdf-duo] listening on :${PORT}`));
+app.listen(PORT, () => console.log(`🚀 DeepL proxy actif sur le port ${PORT}`));

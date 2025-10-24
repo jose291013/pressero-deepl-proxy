@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: pressero-deepl-proxy
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    autoDeploy: true
+    envVars:
+      - key: DEEPL_API_KEY
+        sync: false
